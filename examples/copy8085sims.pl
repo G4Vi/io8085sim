@@ -6,7 +6,7 @@ use File::Basename qw(dirname);
 use Cwd  qw(abs_path);
 say dirname(abs_path $0) . '/../perllib';
 use lib dirname(abs_path $0) . '/../perllib';
-use Sim8085::Interop qw(CreateGnuSim ReadPorts WritePorts);
+use Sim8085::Interop qw(CreateGnuSim ReadPorts WritePorts HashToStructSVPV);
 use Data::Dumper;
 
 say "GNUSim8085 IO address finder";
@@ -15,14 +15,16 @@ die("No GNUSim8085 pid provided!") if (@ARGV < 1);
 #die("Too many arguments") if (@ARGV > 1);
 
 my $pid = $ARGV[0];
-my $gnusim = CreateGnuSim($pid);
-$gnusim or die "Failed to create Sim Interface";
+my $gnusimh = CreateGnuSim($pid);
+$gnusimh or die "Failed to create Sim Interface";
+(my $gnusim = HashToStructSVPV($gnusimh)) or die "Fail to make struct";
 
 my $opid = $ARGV[1];
-my $ognusim = CreateGnuSim($opid);
-$ognusim or die "Failed to create Sim Interface";
+my $ognusimh = CreateGnuSim($opid);
+$ognusimh or die "Failed to create Sim Interface";
+(my $ognusim = HashToStructSVPV($ognusimh)) or die "Fail to make struct";
 
-exit;
+
 my @portvals = ReadPorts($gnusim, 0, 5);
 if($portvals[1] != 0)
 {

@@ -14,7 +14,7 @@ use Exporter qw(import);
 use Data::Dumper;
 no warnings 'portable'; 
 
-our @EXPORT_OK = qw(CreateGnuSim ReadPorts WritePorts SharePorts);
+our @EXPORT_OK = qw(CreateGnuSim ReadPorts WritePorts SharePorts HashToStructSVPV);
 
 
 my @StaticChkOffsetPairs = (
@@ -113,7 +113,13 @@ sub CreateGnuSim {
     return undef if (!defined $address);
     
     say sprintf("pid: %u, address 0x%x", $pid, $address);
-    return create_gnusim($pid, $address);   
+    my %sim = (
+       type => 'GNUSim8085',
+       pid  => $pid,
+       address => $address
+    );    
+   
+    return \%sim;
 }
 
 sub GetGDB {
@@ -395,7 +401,7 @@ sub replace_distance {
   }
 
   /* Create a sim struct and return a ref counted pointer SV *(PV) */ 
-  SV *create_gnusim(unsigned long tpid, void *addr)
+  SV *create_gnusim(long tpid, void *addr)
   {     
       SV *svsim =     newSV(sizeof(GNUSim8085) - 1);           
       GNUSim8085 *sim  = (GNUSim8085 *)SvPVX(svsim);   
@@ -411,6 +417,21 @@ sub replace_distance {
       sv_2mortal is called under the hood, so our struct should be freed when there are not remaining references 
       http://search.cpan.org/~tinita/Inline-C-0.78/lib/Inline/C/Cookbook.pod#Using_Memory
       */   
+  }
+
+  SV *HashToStructSVPV(HV *hv)
+  {
+      SV **type, **pid, **address;
+      if(((type = hv_fetchs(hv, "type", 0))!= NULL) &&
+      (strEQ(SvPV_nolen(*type), "GNUSim8085")) &&
+      ((pid = hv_fetchs(hv, "pid", 0)) != NULL) &&
+      ((address = hv_fetchs(hv, "address", 0)) != NULL))     
+      {          
+          printf("type: %s pid: %ld, address %p\n", SvPV_nolen(*type), SvIV(*pid), SvUV(*address));
+          return create_gnusim(SvIV(*pid), (void*)SvUV(*address));          
+      }
+
+      return newSV(0); 
   }
   
 
