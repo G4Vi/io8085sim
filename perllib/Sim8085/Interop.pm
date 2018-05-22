@@ -12,10 +12,10 @@ use IPC::Open2;
 use integer;
 use Exporter qw(import);
 use Data::Dumper;
+
 no warnings 'portable'; 
-
-our @EXPORT_OK = qw(CreateGnuSim ReadPorts WritePorts SharePorts HashToStructSVPV);
-
+ 
+our @EXPORT_OK = qw(CreateGnuSim ReadPorts WritePorts SharePorts HashToStructSVPV updateStruct update);
 
 my @StaticChkOffsetPairs = (
     {
@@ -87,18 +87,19 @@ sub FindPortAddr {
     return undef;
 }
 
-sub CreateGnuSim {
-    my ($pid) = @_;
-
+sub new {
+    my ($classname, $pid) = @_;
+    
     #calculate the checksum of the process
     my @linesplit = split(' ', `sha256sum /proc/$pid/exe`);
     my $checksum = $linesplit[0];
 
+    my $baseaddress = GetBaseAddress($pid);
     #check against stored checksums for port addr
     my $address;
     foreach my $pair (@StaticChkOffsetPairs) {
         if($pair->{'chk'} eq $checksum) {            
-            $address  = GetBaseAddress($pid) + $pair->{'offset'};            
+            $address  = $baseaddress + $pair->{'offset'};            
             last;
         }
     }
@@ -113,14 +114,35 @@ sub CreateGnuSim {
     return undef if (!defined $address);
     
     say sprintf("pid: %u, address 0x%x", $pid, $address);
+
     my %sim = (
        type => 'GNUSim8085',
        pid  => $pid,
-       address => $address
-    );    
-   
-    return \%sim;
+       address => $address,
+       baseaddress => $baseaddress,
+       struct => create_gnusim($pid, $address)       
+    );     
+    
+    return bless(\%sim, $classname);
 }
+
+# updates the field and regenerates the struct
+sub update {
+    my ($classref, $key, $newvalue) = @_;
+    $classref->{$key} = $newvalue;
+    updateStruct($classref);
+}
+
+# regenerates the struct
+sub updateStruct {   
+   my ($classref) = @_;
+   SAFEFREE($classref->{'struct'});
+   $classref->{'struct'} = create_gnusim($classref->{'pid'}, $classref->{'address'});   
+}
+
+
+
+
 
 sub GetGDB {
     my $read = '';
@@ -141,7 +163,7 @@ sub GDBCommand {
 }
 
 sub SharePorts {
-    my ($pid, $pid2) = @_;
+    my ($gnusim, $ognusim) = @_;  
 
     # make the shared memory
     my $memkey = create_shm();
@@ -149,15 +171,15 @@ sub SharePorts {
     say $memfile;
 
     #setup the processes to use the shared memory, instead of their own static storage
-    if($pid2 != 0) {
+    if(defined $ognusim) {
         my $fpid = fork();
         if($fpid == 0) {
-            $pid = $pid2;
+            $gnusim = $ognusim;            
         }
     }
-    
-    my $baseaddress = GetBaseAddress($pid);
-    my $portstart = $baseaddress + 0x2ae644;
+    my $pid = $gnusim->{'pid'};    
+    my $baseaddress = $gnusim->{'baseaddress'};
+    my $portstart = $gnusim->{'address'};
     my @breakpoints;
 
     # set breakpoints, TODO find the bytecode instead of hardcoding
@@ -362,6 +384,12 @@ sub replace_distance {
   typedef unsigned int uint;
   typedef unsigned long ulong;
 
+  void SAFEFREE(void *addr)
+  {
+      printf("SAFEFREE %p\n", addr);   
+      Safefree(addr);
+  }  
+
   void *get_page_address(unsigned long addr)
   {
       ulong PAGESIZE = sysconf(_SC_PAGESIZE);
@@ -393,31 +421,52 @@ sub replace_distance {
 
   }
 
-
-
   static inline void dumpSVInfo(SV *sv)
   {
       printf("SV addr: %p PVX addr: %p\n", sv, SvPVX(sv));
   }
 
-  /* Create a sim struct and return a ref counted pointer SV *(PV) */ 
+  /* Create a sim struct and return it as an IV */
   SV *create_gnusim(long tpid, void *addr)
-  {     
-      SV *svsim =     newSV(sizeof(GNUSim8085) - 1);           
-      GNUSim8085 *sim  = (GNUSim8085 *)SvPVX(svsim);   
-      SvCUR_set(svsim, sizeof(GNUSim8085));
-      SvPOK_on(svsim);
+  {
+      GNUSim8085 *sim;
+      Newx(sim, 1, GNUSim8085);   
+      printf("sim address start %p\n", sim);   
 
       sim->type = IO8085Sim_GNUSim8085;
       sim->pid = (pid_t)tpid;
       sim->ports = addr;      
       
-      return svsim; 
-      /*
-      sv_2mortal is called under the hood, so our struct should be freed when there are not remaining references 
-      http://search.cpan.org/~tinita/Inline-C-0.78/lib/Inline/C/Cookbook.pod#Using_Memory
-      */   
+      /* Copy the pointer into an RV, make the ptr itself readonly*/
+      /*SV *obj_ref = sv_setref_pv(newSV(0), NULL, sim);
+      SvREADONLY_on(SvRV(obj_ref));
+      return obj_ref;*/
+
+      /* put the ptr in an IV*/
+      SV *obj = newSViv((IV)sim);
+      SvREADONLY_on(obj);
+      return obj;
   }
+
+  void DESTROY(SV* obj)
+  {
+      SV **structrv;      
+      if((structrv = hv_fetchs((HV*)SvRV(obj), "struct", 0)) != NULL)
+      {   
+          /* RV handling */       
+          /* IO8085Sim *sim = (IO8085Sim *)SvIV(SvRV(*structrv)); */
+
+          IO8085Sim *sim = (IO8085Sim *)SvIV(*structrv);
+          printf("sim address end %p\n", sim);
+          Safefree(sim);
+      }
+      else
+      {
+          printf("didn't free\n");
+      }      
+  }
+
+
 
   SV *HashToStructSVPV(HV *hv)
   {
@@ -434,9 +483,8 @@ sub replace_distance {
       return newSV(0); 
   }
   
-
   /* Wrapper for io8085sim_read_ports */
-  void ReadPorts(SV *svsim, unsigned int start_port, unsigned int num_ports)
+  void ReadPorts(const char *classname, SV *svsim, unsigned int start_port, unsigned int num_ports)
   {      
       void *sim = SvPVX(svsim);      
       uint8_t dest[256];     
@@ -452,7 +500,7 @@ sub replace_distance {
   }
 
   /* Wrapper for io8085sim_write_ports */
-  void WritePorts(SV *svsim, unsigned int start_port, AV *array)
+  void WritePorts(const char *classname, SV *svsim, unsigned int start_port, AV *array)
   {      
       uint8_t src[256];      
       uint i;

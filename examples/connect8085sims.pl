@@ -6,7 +6,7 @@ use File::Basename qw(dirname);
 use Cwd  qw(abs_path);
 say dirname(abs_path $0) . '/../perllib';
 use lib dirname(abs_path $0) . '/../perllib';
-use Sim8085::Interop qw(CreateGnuSim SharePorts);
+use Sim8085::Interop qw(SharePorts);
 
 
 say "GNUSim8085 IO address finder";
@@ -19,15 +19,15 @@ my $pid2 = 0;
 $pid2 = $ARGV[1] if (@ARGV > 1) ;
 
 my $ognusim;
-my $gnusim = CreateGnuSim($pid);
+my $gnusim = Sim8085::Interop->new($pid);
 $gnusim or die "Failed to create Sim Interface";
 
 if ($pid2 != 0) {
-   $ognusim = CreateGnuSim($pid2);
+   $ognusim = Sim8085::Interop->new($pid2);
    $ognusim or die "Failed to create Sim Interface";
 }
 
 
-SharePorts($pid, $pid2);
+SharePorts($gnusim, $ognusim);
 
 
